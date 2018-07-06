@@ -222,7 +222,7 @@ func main() {
 
 	//config := webrtc.NewConfiguration(
 	//	webrtc.OptionIceServer("turn:139.199.180.239:7002"))
-	urls := []string{"turn:139.199.180.239:7002"}
+	urls := []string{"turn:139.199.180.239:7002?transport=udp"}
 	s := webrtc.IceServer{Urls:urls,Username:"admin",Credential:"turn.yqtc.top"}//Credential:"turn.yqtc.top"
 
 	webrtc.NewIceServer()

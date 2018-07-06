@@ -192,13 +192,15 @@ func main () {
 	//config := webrtc.NewConfiguration(
 	//	webrtc.OptionIceServer("turn:139.199.180.239:7002"))
 	urls := []string{"turn:139.199.180.239:7002"}
-	s := webrtc.IceServer{Urls:urls,Username:"admin",Credential:"turn.yqtc.top"}//Credential:"turn.yqtc.top"
+
+	s := webrtc.IceServer{Urls:urls,Username:"admin",Credential:"admin"}//Credential:"turn.yqtc.top"
 
 	webrtc.NewIceServer()
 	config := webrtc.NewConfiguration()
 	config.IceServers = append(config.IceServers , s)
 
 	pc, err = webrtc.NewPeerConnection(config)
+
 	if nil != err {
 		fmt.Println("Failed to create PeerConnection.")
 		return
