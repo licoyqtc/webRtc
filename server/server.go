@@ -30,6 +30,8 @@ var pc *webrtc.PeerConnection
 var dc *webrtc.DataChannel
 var err error
 
+const box = "12"
+
 func generateOffer() {
 	fmt.Println("Generating offer...")
 	offer, err := pc.CreateOffer() // blocking
@@ -71,7 +73,7 @@ func signalRegister(msg string) {
 
 	body := SdpReq{}
 
-	body.Box_id = "1234"
+	body.Box_id = box
 	body.Action = 0
 	body.Box_sdp = msg
 
@@ -90,7 +92,7 @@ func signalRegister(msg string) {
 	}
 
 	rspb, _ := ioutil.ReadAll(r.Body)
-
+	fmt.Printf("local sdp :%s\n",msg)
 	fmt.Printf("http rsp :%s\n",rspb)
 
 }
@@ -100,7 +102,7 @@ func getSdpConnet() bool{
 
 	body := SdpReq{}
 
-	body.Box_id = "1234"
+	body.Box_id = box
 	body.Action = 1
 
 	url := "http://iamtest.yqtc.co/ubbey/turn/box_sdp"
@@ -189,16 +191,16 @@ func prepareDataChannel(channel *webrtc.DataChannel) {
 func main () {
 	fmt.Println("Starting up PeerConnection...")
 	// TODO: Try with TURN servers.
-	//config := webrtc.NewConfiguration(
-	//	webrtc.OptionIceServer("turn:139.199.180.239:7002"))
-	urls := []string{"turn:139.199.180.239:7002"}
+	config := webrtc.NewConfiguration(
+		webrtc.OptionIceServer("turn:iamtest.yqtc.co:3478?transport=udp","1531126765:guest","1X4GP5oKcPSu837leQEQSSR+g8w="))
 
-	s := webrtc.IceServer{Urls:urls,Username:"admin",Credential:"admin"}//Credential:"turn.yqtc.top"
-
-	webrtc.NewIceServer()
-	config := webrtc.NewConfiguration()
-	config.IceServers = append(config.IceServers , s)
-
+	//urls := []string{"turn:iamtest.yqtc.co:3478?transport=udp"}
+	//
+	//s := webrtc.IceServer{Urls:urls,Username:"1531126765:guest",Credential:"1X4GP5oKcPSu837leQEQSSR+g8w="}//Credential:"turn.yqtc.top"
+	//webrtc.NewIceServer()
+	//config := webrtc.NewConfiguration()
+	//config.IceServers = append(config.IceServers , s)
+	config.IceTransportPolicy = webrtc.IceTransportPolicyRelay
 	pc, err = webrtc.NewPeerConnection(config)
 
 	if nil != err {
@@ -243,24 +245,24 @@ func main () {
 		return
 	}
 
+	prepareDataChannel(dc)
+
 	go func () {
 		for {
-			time.Sleep(time.Second*5)
+			time.Sleep(time.Second*30)
 			if getSdpConnet(){
 				break
 			}
 		}
 	}()
 
-
-	prepareDataChannel(dc)
-
-
-
 	for {
 		msg := "i am server\n"
 		fmt.Printf("server send data : %s\n",msg)
-		dc.Send([]byte(msg))
+		fmt.Printf("dc status :%s\n",dc.ReadyState().String())
+		if dc.ReadyState().String() == "open"{
+			dc.Send([]byte(msg))
+		}
 		time.Sleep(time.Second * 4)
 	}
 }

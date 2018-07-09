@@ -17,6 +17,7 @@ import (
 var pc *webrtc.PeerConnection
 var dc *webrtc.DataChannel
 var err error
+const box = "12"
 
 type SdpReq struct {
 	Box_id 	string	`json:"box_id"`
@@ -95,14 +96,12 @@ func signalReceive(msg string) {
 	}
 }
 
-
-
 func getServerSdp() SdpRsp {
 	fmt.Println(" ---- get sdp connect from host ---- ")
 
 	body := SdpReq{}
 
-	body.Box_id = "1234"
+	body.Box_id = box
 	body.Action = 0
 
 	url := "http://iamtest.yqtc.co/ubbey/turn/app_connect"
@@ -140,7 +139,7 @@ func regClientSdp(msg string){
 
 	body := SdpReq{}
 
-	body.Box_id = "1234"
+	body.Box_id = box
 	body.Action = 1
 	body.App_sdp = msg
 
@@ -160,44 +159,12 @@ func regClientSdp(msg string){
 	}
 
 	rspb, _ := ioutil.ReadAll(r.Body)
-
+	fmt.Printf("local sdp :%s\n",msg)
 	fmt.Printf("http rsp :%s, register done \n",rspb)
 
 }
 
 // Manual "copy-paste" signaling channel.
-func signalRegister(msg string) {
-
-	fmt.Println(" ---- register sdp to host ---- ")
-
-	url := "http://iamtest.yqtc.co/turn/app_connect"
-
-	body := SdpReq{}
-
-	body.Box_id = "1234"
-	body.Action = 0
-	body.App_sdp = msg
-
-	b , _ := json.Marshal(body)
-
-	req , _ := http.NewRequest("POST",url,bytes.NewReader(b))
-
-	cli := http.Client{}
-
-	tr := &http.Transport{TLSClientConfig:&tls.Config{InsecureSkipVerify:true}}
-	cli.Transport = tr
-
-	r , err := cli.Do(req)
-	if err != nil {
-		fmt.Printf("http err :%s\n",err.Error())
-	}
-
-	rspb, _ := ioutil.ReadAll(r.Body)
-
-	fmt.Printf("http rsp :%s\n",rspb)
-
-}
-
 // Attach callbacks to a newly created data channel.
 // In this demo, only one data channel is expected, and is only used for chat.
 // But it is possible to send any sort of bytes over a data channel, for many
@@ -220,19 +187,24 @@ func prepareDataChannel(channel *webrtc.DataChannel) {
 func main() {
 
 
-	//config := webrtc.NewConfiguration(
-	//	webrtc.OptionIceServer("turn:139.199.180.239:7002"))
-	urls := []string{"turn:139.199.180.239:7002?transport=udp"}
-	s := webrtc.IceServer{Urls:urls,Username:"admin",Credential:"turn.yqtc.top"}//Credential:"turn.yqtc.top"
+	//urls := []string{"turn:iamtest.yqtc.co:3478?transport=udp"}
+	//s := webrtc.IceServer{Urls:urls,Username:"1531126765:guest",Credential:"1X4GP5oKcPSu837leQEQSSR+g8w="}//Credential:"turn.yqtc.top"
+	//
+	//webrtc.NewIceServer()
+	//config := webrtc.NewConfiguration()
+	//config.IceServers = append(config.IceServers , s)
+	fmt.Printf("start init pc conn\n")
+	config := webrtc.NewConfiguration(
+		webrtc.OptionIceServer("turn:iamtest.yqtc.co:3478?transport=udp","1531126765:guest","1X4GP5oKcPSu837leQEQSSR+g8w="))
 
-	webrtc.NewIceServer()
-	config := webrtc.NewConfiguration()
-	config.IceServers = append(config.IceServers , s)
+	config.IceTransportPolicy = webrtc.IceTransportPolicyRelay
+
 	pc, err = webrtc.NewPeerConnection(config)
 	if nil != err {
 		fmt.Println("Failed to create PeerConnection.")
 		return
 	}
+
 
 	// OnNegotiationNeeded is triggered when something important has occurred in
 	// the state of PeerConnection (such as creating a new data channel), in which
@@ -244,9 +216,8 @@ func main() {
 	// peer which will attempt reaching the local peer through NATs.
 	pc.OnIceComplete = func() {
 		fmt.Println("Finished gathering ICE candidates.")
-		fmt.Printf("local sdp :%s\n",pc.LocalDescription().Serialize())
 		//sdp := pc.LocalDescription().Serialize()
-		//regClientSdp(sdp)
+
 	}
 	/*
 		pc.OnIceGatheringStateChange = func(state webrtc.IceGatheringState) {
@@ -265,20 +236,26 @@ func main() {
 	}
 
 	// Attempting to create the first datachannel triggers ICE.
-	fmt.Println("Initializing datachannel....")
-	dc, err = pc.CreateDataChannel("test")
-	if nil != err {
-		fmt.Println("Unexpected failure creating Channel.")
-		return
-	}
+	//fmt.Println("Initializing datachannel....")
+	//dc, err = pc.CreateDataChannel("test")
+	//if nil != err {
+	//	fmt.Println("Unexpected failure creating Channel.")
+	//	return
+	//}
+	//
+	//prepareDataChannel(dc)
+
+	time.Sleep(time.Second * 10)
 
 	getServerSdp()
 
 
 	for {
+		time.Sleep(time.Second * 5)
 		sdp := pc.LocalDescription().Serialize()
+		//fmt.Printf("loop sdp :%s\n",sdp)
 		if sdp == "null"{
-			fmt.Printf("localsdp null , continue\n")
+			//fmt.Printf("localsdp null , continue\n")
 			continue
 		}
 
@@ -286,17 +263,22 @@ func main() {
 		break
 	}
 
-	prepareDataChannel(dc)
+	//prepareDataChannel(dc)
 
 	for {
 
 		msg := "i am client\n"
-		fmt.Printf("server send data : %s\n",msg)
-		dc.Send([]byte(msg))
+
+		if dc != nil {
+			fmt.Printf("client send data : %s\n",msg)
+			fmt.Printf("dc status :%s\n",dc.ReadyState().String())
+			dc.Send([]byte(msg))
+		}
+
 		time.Sleep(time.Second * 4)
+
 	}
 
 
 }
-
 
