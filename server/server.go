@@ -1,38 +1,137 @@
 package main
 
 import (
-	"fmt"
-	"github.com/keroserene/go-webrtc"
-	"encoding/json"
-	"net/http"
 	"bytes"
 	"crypto/tls"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"github.com/keroserene/go-webrtc"
 	"io/ioutil"
+	"net/http"
+	"strings"
 	"time"
 )
 
-
 type SdpReq struct {
-	Box_id 	string	`json:"box_id"`
-	Action 	int		`json:"action"`
-	Box_sdp string	`json:"box_sdp"`
+	Box_id  string `json:"box_id"`
+	Action  int    `json:"action"`
+	Box_sdp string `json:"box_sdp"`
 }
 
 type SdpRsp struct {
-	Err_no 	int	`json:"err_no"`
-	Err_msg string	`json:"err_msg"`
-	App_sdp string	`json:"app_sdp"`
+	Err_no  int    `json:"err_no"`
+	Err_msg string `json:"err_msg"`
+	App_sdp string `json:"app_sdp"`
 }
 
-
-
-var pc *webrtc.PeerConnection
+const BOXID = "123"
 var dc *webrtc.DataChannel
-var err error
+func mainprocess() {
+	var (
+		ChOnGenerateOffer = make(chan int, 1)
+		ChSignalRegister  = make(chan string, 1)
+		ChStartGetAppSdp  = make(chan string, 1)
+		ChStartSetBoxSdp  = make(chan string, 1)
+		ChAllOk = make(chan int, 1)
+	)
 
-const box = "12"
+	// Step 1. create pc
+	pc := createpc()
 
-func generateOffer() {
+	// Step 2. register callback
+	registerCallback(pc, ChOnGenerateOffer, ChSignalRegister)
+
+	// Step 3. createoffer
+	go func() {
+		<-ChOnGenerateOffer //wait
+		generateOffer(pc)
+	}()
+
+	// Step 4. registerBoxSdp
+	go func() {
+		sdp := <-ChSignalRegister //wait
+		registerBoxSdp(sdp)
+		ChStartGetAppSdp <- sdp
+	}()
+
+	// Step 5. getRemoteAppSdp
+	go func() {
+		box_sdp := <-ChStartGetAppSdp //wait
+		app_sdp := getRemoteAppSdpUtilSuccess(box_sdp)
+		ChStartSetBoxSdp <- app_sdp
+	}()
+
+	// Step 6. setBoxLocalRemoteSdp
+	go func() {
+		app_sdp := <-ChStartSetBoxSdp //wait
+		setBoxLocalRemoteSdp(app_sdp, pc)
+		ChAllOk<-1
+	}()
+
+	// Step 7. blocked & loop & print status info
+	var endchat bool = false
+	dc = prepareDataChannel(pc, &endchat)
+	time.Sleep(5 * time.Second)
+	fmt.Printf("====Waiting all ok===\n", )
+	<-ChAllOk
+	for !endchat{
+		msg := "i am server\n"
+		fmt.Printf("server send data : %s\n", msg)
+		fmt.Printf("DataChannel state : %s\n", dc.ReadyState().String())
+		dc.Send([]byte(msg))
+		time.Sleep(5 * time.Second)
+	}
+}
+func main(){
+	for{
+		fmt.Println("!!!Start a new session!!!!")
+		mainprocess()
+	}
+}
+
+func createpc() *webrtc.PeerConnection {
+	fmt.Println("Initbox...")
+	fmt.Println("Starting up PeerConnection config...")
+	urls := []string{"turn:139.199.180.239:3478", "stun:139.199.180.239:3478"}
+	s := webrtc.IceServer{Urls: urls, Username: "admin", Credential: "admin"} //Credential:"turn.yqtc.top"
+	webrtc.NewIceServer()
+	config := webrtc.NewConfiguration()
+	config.IceServers = append(config.IceServers, s)
+	config.IceTransportPolicy = webrtc.IceTransportPolicyRelay
+
+	pc, err := webrtc.NewPeerConnection(config)
+	if nil != err {
+		fmt.Println("Failed to create PeerConnection.")
+		return pc
+	}
+	return pc
+}
+
+func registerCallback(pc *webrtc.PeerConnection, ChCanGenOffer chan int, ChCanRegisterSdp chan string) {
+	// OnNegotiationNeeded is triggered when something important has occurred in
+	// the state of PeerConnection (such as creating a new data channel), in which
+	// case a new SDP offer must be prepared and sent to the remote peer.
+	pc.OnNegotiationNeeded = func() {
+		ChCanGenOffer <- 1
+	}
+
+	// Once all ICE candidates are prepared, they need to be sent to the remote
+	// peer which will attempt reaching the local peer through NATs.
+	pc.OnIceComplete = func() {
+		fmt.Println("Finished gathering ICE candidates.")
+		sdp := pc.LocalDescription().Serialize()
+		ChCanRegisterSdp <- sdp
+	}
+
+	pc.OnDataChannel = func(channel *webrtc.DataChannel) {
+		fmt.Println("Datachannel established by remote... ", channel.Label())
+		dc = channel
+		datachannlePrepare(channel)
+	}
+}
+
+func generateOffer(pc *webrtc.PeerConnection) {
 	fmt.Println("Generating offer...")
 	offer, err := pc.CreateOffer() // blocking
 	if err != nil {
@@ -42,110 +141,113 @@ func generateOffer() {
 	pc.SetLocalDescription(offer)
 }
 
-func generateAnswer() {
-	fmt.Println("Generating answer...")
-	answer, err := pc.CreateAnswer() // blocking
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	pc.SetLocalDescription(answer)
-}
-
-func receiveDescription(sdp *webrtc.SessionDescription) {
-	err = pc.SetRemoteDescription(sdp)
-	if nil != err {
-		fmt.Println("ERROR", err)
-		return
-	}
-	fmt.Println("SDP " + sdp.Type + " successfully received.")
-	if "offer" == sdp.Type {
-		go generateAnswer()
-	}
-}
-
-// Manual "copy-paste" signaling channel.
-func signalRegister(msg string) {
-
+func registerBoxSdp(msg string) {
 	fmt.Println(" ---- register sdp to host ---- ")
-
 	url := "http://iamtest.yqtc.co/ubbey/turn/box_sdp"
-
 	body := SdpReq{}
 
-	body.Box_id = box
+	body.Box_id = BOXID
 	body.Action = 0
 	body.Box_sdp = msg
 
-	b , _ := json.Marshal(body)
+	b, _ := json.Marshal(body)
 
-	req , _ := http.NewRequest("POST",url,bytes.NewReader(b))
-	req.Header.Add("Content-type","application/json")
+	req, _ := http.NewRequest("POST", url, bytes.NewReader(b))
+	req.Header.Add("Content-type", "application/json")
 	cli := http.Client{}
 
-	tr := &http.Transport{TLSClientConfig:&tls.Config{InsecureSkipVerify:true}}
+	tr := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
 	cli.Transport = tr
 
-	r , err := cli.Do(req)
+	r, err := cli.Do(req)
 	if err != nil {
-		fmt.Printf("http err :%s\n",err.Error())
+		fmt.Printf("http err :%s\n", err.Error())
 	}
 
 	rspb, _ := ioutil.ReadAll(r.Body)
-	fmt.Printf("local sdp :%s\n",msg)
-	fmt.Printf("http rsp :%s\n",rspb)
+
+	fmt.Printf("http rsp :%s\n", rspb)
 
 }
 
-func getSdpConnet() bool{
+func getRemoteAppSdp() (sdp string, boxsid string, err error) {
 	fmt.Println(" ---- get sdp connect from host ---- ")
 
 	body := SdpReq{}
-
-	body.Box_id = box
+	body.Box_id = BOXID
 	body.Action = 1
 
 	url := "http://iamtest.yqtc.co/ubbey/turn/box_sdp"
 
-	b , _ := json.Marshal(body)
+	b, _ := json.Marshal(body)
 
-	req , _ := http.NewRequest("POST",url,bytes.NewReader(b))
-	req.Header.Add("Content-type","application/json")
+	req, _ := http.NewRequest("POST", url, bytes.NewReader(b))
+	req.Header.Add("Content-type", "application/json")
 
 	cli := http.Client{}
 
-	tr := &http.Transport{TLSClientConfig:&tls.Config{InsecureSkipVerify:true}}
+	tr := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
 	cli.Transport = tr
 
-	r , err := cli.Do(req)
+	r, err := cli.Do(req)
 	if err != nil {
-		fmt.Printf("http err :%s\n",err.Error())
+		fmt.Printf("http err :%s\n", err.Error())
+		return "", "", err
 	}
 
 	rspb, _ := ioutil.ReadAll(r.Body)
-	fmt.Printf("sdp http success :%s\n",rspb)
+	fmt.Printf("sdp http success :%s\n", rspb)
 	rsp := SdpRsp{}
-	json.Unmarshal(rspb , &rsp)
+	json.Unmarshal(rspb, &rsp)
 
-	fmt.Printf("get sdp rsp %+v\n",rsp)
-	if rsp.App_sdp != "" {
-		fmt.Printf("get client sdp success %s,true\n",rsp.App_sdp)
-		signalReceive(rsp.App_sdp)
-		return true
+	fmt.Printf("get sdp rsp %+v\n", rsp)
+	if rsp.App_sdp == "" {
+		return "", "", errors.New("rsp.App_sdp is empty")
 	}
-	return false
+
+	var objmap map[string]*json.RawMessage
+	err = json.Unmarshal([]byte(rsp.App_sdp), &objmap)
+	if err != nil {
+		fmt.Printf("Unmarshal App_sdp error:%s\n", err.Error())
+		return "", "", err
+	} else if _, ok := objmap["myrandsessionid"]; ok && nil == json.Unmarshal(*objmap["myrandsessionid"], &boxsid) {
+		sdp = rsp.App_sdp
+		return sdp, boxsid, nil
+	} else {
+		return "", "", errors.New("rsp.App_sdp have no 'myrandsessionid' field")
+	}
 }
 
+func getRemoteAppSdpUtilSuccess(box_sdp string) (appsdp string) {
+	for {
+		app_sdp, box_sid, err := getRemoteAppSdp()
+		if err == nil && strings.Index(box_sdp, box_sid) >= 0 {
+			fmt.Printf("====Success get app_sdp:%s, ===box_sdp:%s, ===box_sid:%s\n",app_sdp, box_sdp, box_sid)
+			fmt.Println("====Success get app_sdp, ready to setBoxLocalRemoteSdp")
+			appsdp = app_sdp
+			break
+		} else if err == nil {
+			fmt.Printf("====Success get app_sdp:%s, ===box_sdp:%s, ===box_sid:%s\n",app_sdp, box_sdp, box_sid)
+			fmt.Println("====Success get app_sdp, but box_sid NOT match, retry....")
+			time.Sleep(5 * time.Second)
+			continue
+		} else {
+			fmt.Println("====Failed get app_sdp, retry, error=" + err.Error())
+			time.Sleep(5 * time.Second)
+			continue
+		}
+	}
+	return
+}
 
-
-func signalReceive(msg string) {
+func setBoxLocalRemoteSdp(msg string, pc *webrtc.PeerConnection) {
 	var parsed map[string]interface{}
-	err = json.Unmarshal([]byte(msg), &parsed)
+	err := json.Unmarshal([]byte(msg), &parsed)
 	if nil != err {
-		// fmt.Println(err, ", try again.")
+		fmt.Println(err, ", try again.")
+		fmt.Println("input msg=" + msg)
 		return
 	}
-
 
 	if nil != parsed["sdp"] {
 		sdp := webrtc.DeserializeSessionDescription(msg)
@@ -153,7 +255,13 @@ func signalReceive(msg string) {
 			fmt.Println("Invalid SDP.")
 			return
 		}
-		receiveDescription(sdp)
+
+		err = pc.SetRemoteDescription(sdp)
+		if nil != err {
+			fmt.Println("ERROR", err)
+			return
+		}
+		fmt.Println("SDP " + sdp.Type + " successfully received.")
 	}
 
 	// Allow individual ICE candidate messages, but this won't be necessary if
@@ -167,102 +275,43 @@ func signalReceive(msg string) {
 		pc.AddIceCandidate(*ice)
 		fmt.Println("ICE candidate successfully received.")
 	}
+	fmt.Println("\nNormal exit setBoxLocalRemoteSdp")
 }
 
-// Attach callbacks to a newly created data channel.
-// In this demo, only one data channel is expected, and is only used for chat.
-// But it is possible to send any sort of bytes over a data channel, for many
-// more interesting purposes.
-func prepareDataChannel(channel *webrtc.DataChannel) {
-	channel.OnOpen = func() {
-		fmt.Println("Data Channel Opened!")
-		//startChat()
-	}
-	channel.OnClose = func() {
-		fmt.Println("Data Channel closed.")
-		//endChat()
-	}
-	channel.OnMessage = func(msg []byte) {
-		fmt.Printf("recv msg : %s\n",msg)
-	}
-}
-
-
-func main () {
-	fmt.Println("Starting up PeerConnection...")
-	// TODO: Try with TURN servers.
-	config := webrtc.NewConfiguration(
-		webrtc.OptionIceServer("turn:iamtest.yqtc.co:3478?transport=udp","1531126765:guest","1X4GP5oKcPSu837leQEQSSR+g8w="))
-
-	//urls := []string{"turn:iamtest.yqtc.co:3478?transport=udp"}
-	//
-	//s := webrtc.IceServer{Urls:urls,Username:"1531126765:guest",Credential:"1X4GP5oKcPSu837leQEQSSR+g8w="}//Credential:"turn.yqtc.top"
-	//webrtc.NewIceServer()
-	//config := webrtc.NewConfiguration()
-	//config.IceServers = append(config.IceServers , s)
-	config.IceTransportPolicy = webrtc.IceTransportPolicyRelay
-	pc, err = webrtc.NewPeerConnection(config)
-
-	if nil != err {
-		fmt.Println("Failed to create PeerConnection.")
-		return
-	}
-
-	// OnNegotiationNeeded is triggered when something important has occurred in
-	// the state of PeerConnection (such as creating a new data channel), in which
-	// case a new SDP offer must be prepared and sent to the remote peer.
-	pc.OnNegotiationNeeded = func() {
-		go generateOffer()
-	}
-	// Once all ICE candidates are prepared, they need to be sent to the remote
-	// peer which will attempt reaching the local peer through NATs.
-	pc.OnIceComplete = func() {
-		fmt.Println("Finished gathering ICE candidates.")
-		sdp := pc.LocalDescription().Serialize()
-		signalRegister(sdp)
-	}
-	/*
-		pc.OnIceGatheringStateChange = func(state webrtc.IceGatheringState) {
-			fmt.Println("Ice Gathering State:", state)
-			if webrtc.IceGatheringStateComplete == state {
-				// send local description.
-			}
-		}
-	*/
-	// A DataChannel is generated through this callback only when the remote peer
-	// has initiated the creation of the data channel.
-	pc.OnDataChannel = func(channel *webrtc.DataChannel) {
-		fmt.Println("Datachannel established by remote... ", channel.Label())
-		dc = channel
-		prepareDataChannel(channel)
-	}
-
+func prepareDataChannel(pc *webrtc.PeerConnection, endchat *bool) (dc *webrtc.DataChannel) {
 	// Attempting to create the first datachannel triggers ICE.
-	fmt.Println("Initializing datachannel....")
-	dc, err = pc.CreateDataChannel("test")
+	fmt.Println("prepareDataChannel datachannel....")
+	dc, err := pc.CreateDataChannel("test")
 	if nil != err {
 		fmt.Println("Unexpected failure creating Channel.")
 		return
 	}
 
-	prepareDataChannel(dc)
-
-	go func () {
-		for {
-			time.Sleep(time.Second*30)
-			if getSdpConnet(){
-				break
-			}
-		}
-	}()
-
-	for {
-		msg := "i am server\n"
-		fmt.Printf("server send data : %s\n",msg)
-		fmt.Printf("dc status :%s\n",dc.ReadyState().String())
-		if dc.ReadyState().String() == "open"{
-			dc.Send([]byte(msg))
-		}
-		time.Sleep(time.Second * 4)
+	dc.OnOpen = func() {
+		fmt.Println("Data Channel Opened!")
+		//startChat()
 	}
+	dc.OnClose = func() {
+		fmt.Println("Data Channel closed.")
+		*endchat = true
+	}
+	dc.OnMessage = func(msg []byte) {
+		fmt.Printf("recv msg : %s\n", msg)
+	}
+	return dc
+}
+
+
+func datachannlePrepare(channl *webrtc.DataChannel) *webrtc.DataChannel {
+	channl.OnOpen = func() {
+		fmt.Println("Data Channel Opened!")
+		//startChat()
+	}
+	channl.OnClose = func() {
+		fmt.Println("Data Channel closed.")
+	}
+	channl.OnMessage = func(msg []byte) {
+		fmt.Printf("recv msg : %s\n", msg)
+	}
+	return channl
 }
