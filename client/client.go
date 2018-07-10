@@ -57,22 +57,21 @@ func mainprocess() {
 	go func() {
 
 		for{
-			time.Sleep(time.Second*5)
+			time.Sleep(time.Second*10)
 			sdp := getRemoteServerSdp()
 			if sdp != "" {
 				resdp := handleRemoteBoxSdpUtilSuccess(sdp , pc)
 				ChStartRegAppSdp <- resdp
 			}
-
+			break
 		}
-
 
 	}()
 
 	// Step 6. setAppLocalRemoteSdp
 	go func() {
 		app_sdp := <-ChStartRegAppSdp //wait
-
+		time.Sleep(time.Second*5)
 		setAppRemoteSdp(app_sdp)
 		ChAllOk<-1
 	}()
@@ -84,7 +83,7 @@ func mainprocess() {
 	fmt.Printf("====Waiting all ok===\n", )
 	<-ChAllOk
 	for !endchat{
-		msg := "i am client\n"
+		msg := "i am client 3\n"
 
 		if dc != nil {
 			fmt.Printf("DataChannel state : %s\n", dc.ReadyState().String())
@@ -105,8 +104,9 @@ func main(){
 func createpc() *webrtc.PeerConnection {
 	fmt.Println("Initbox...")
 	fmt.Println("Starting up PeerConnection config...")
-	urls := []string{"turn:139.199.180.239:3478", "stun:139.199.180.239:3478"}
-	s := webrtc.IceServer{Urls: urls, Username: "admin", Credential: "admin"} //Credential:"turn.yqtc.top"
+
+	urls := []string{"turn:iamtest.yqtc.co:3478?transport=udp"}
+	s := webrtc.IceServer{Urls: urls, Username: "1531277854:guest", Credential: "3dLgnggMLsyTCOb5CF+jcOznZ8A="} //Credential:"turn.yqtc.top"
 	webrtc.NewIceServer()
 	config := webrtc.NewConfiguration()
 	config.IceServers = append(config.IceServers, s)

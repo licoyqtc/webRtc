@@ -26,13 +26,16 @@ type SdpRsp struct {
 }
 
 const BOXID = "123"
-var dc *webrtc.DataChannel
+
+
+var ChSignalNewConn = make(chan int, 1)
 func mainprocess() {
 	var (
 		ChOnGenerateOffer = make(chan int, 1)
 		ChSignalRegister  = make(chan string, 1)
 		ChStartGetAppSdp  = make(chan string, 1)
 		ChStartSetBoxSdp  = make(chan string, 1)
+		dc *webrtc.DataChannel
 		ChAllOk = make(chan int, 1)
 	)
 
@@ -40,7 +43,7 @@ func mainprocess() {
 	pc := createpc()
 
 	// Step 2. register callback
-	registerCallback(pc, ChOnGenerateOffer, ChSignalRegister)
+	registerCallback(pc, dc, ChOnGenerateOffer, ChSignalRegister)
 
 	// Step 3. createoffer
 	go func() {
@@ -58,6 +61,7 @@ func mainprocess() {
 	// Step 5. getRemoteAppSdp
 	go func() {
 		box_sdp := <-ChStartGetAppSdp //wait
+		time.Sleep(time.Second * 30)
 		app_sdp := getRemoteAppSdpUtilSuccess(box_sdp)
 		ChStartSetBoxSdp <- app_sdp
 	}()
@@ -71,10 +75,11 @@ func mainprocess() {
 
 	// Step 7. blocked & loop & print status info
 	var endchat bool = false
-	dc = prepareDataChannel(pc, &endchat)
+	dc = prepareDataChannel(pc, &endchat , dc)
 	time.Sleep(5 * time.Second)
 	fmt.Printf("====Waiting all ok===\n", )
 	<-ChAllOk
+	ChSignalNewConn <- 1
 	for !endchat{
 		msg := "i am server\n"
 		fmt.Printf("server send data : %s\n", msg)
@@ -86,15 +91,17 @@ func mainprocess() {
 func main(){
 	for{
 		fmt.Println("!!!Start a new session!!!!")
-		mainprocess()
+
+		go mainprocess()
+		<-ChSignalNewConn
 	}
 }
 
 func createpc() *webrtc.PeerConnection {
 	fmt.Println("Initbox...")
 	fmt.Println("Starting up PeerConnection config...")
-	urls := []string{"turn:139.199.180.239:3478", "stun:139.199.180.239:3478"}
-	s := webrtc.IceServer{Urls: urls, Username: "admin", Credential: "admin"} //Credential:"turn.yqtc.top"
+	urls := []string{"turn:iamtest.yqtc.co:3478?transport=udp"}
+	s := webrtc.IceServer{Urls: urls, Username: "1531277854:guest", Credential: "3dLgnggMLsyTCOb5CF+jcOznZ8A="} //Credential:"turn.yqtc.top"
 	webrtc.NewIceServer()
 	config := webrtc.NewConfiguration()
 	config.IceServers = append(config.IceServers, s)
@@ -108,7 +115,7 @@ func createpc() *webrtc.PeerConnection {
 	return pc
 }
 
-func registerCallback(pc *webrtc.PeerConnection, ChCanGenOffer chan int, ChCanRegisterSdp chan string) {
+func registerCallback(pc *webrtc.PeerConnection, dc *webrtc.DataChannel, ChCanGenOffer chan int, ChCanRegisterSdp chan string) {
 	// OnNegotiationNeeded is triggered when something important has occurred in
 	// the state of PeerConnection (such as creating a new data channel), in which
 	// case a new SDP offer must be prepared and sent to the remote peer.
@@ -278,27 +285,27 @@ func setBoxLocalRemoteSdp(msg string, pc *webrtc.PeerConnection) {
 	fmt.Println("\nNormal exit setBoxLocalRemoteSdp")
 }
 
-func prepareDataChannel(pc *webrtc.PeerConnection, endchat *bool) (dc *webrtc.DataChannel) {
+func prepareDataChannel(pc *webrtc.PeerConnection, endchat *bool, datachannl *webrtc.DataChannel) (dc *webrtc.DataChannel) {
 	// Attempting to create the first datachannel triggers ICE.
 	fmt.Println("prepareDataChannel datachannel....")
-	dc, err := pc.CreateDataChannel("test")
+	datachannl, err := pc.CreateDataChannel("test")
 	if nil != err {
 		fmt.Println("Unexpected failure creating Channel.")
 		return
 	}
 
-	dc.OnOpen = func() {
+	datachannl.OnOpen = func() {
 		fmt.Println("Data Channel Opened!")
 		//startChat()
 	}
-	dc.OnClose = func() {
+	datachannl.OnClose = func() {
 		fmt.Println("Data Channel closed.")
 		*endchat = true
 	}
-	dc.OnMessage = func(msg []byte) {
+	datachannl.OnMessage = func(msg []byte) {
 		fmt.Printf("recv msg : %s\n", msg)
 	}
-	return dc
+	return datachannl
 }
 
 
