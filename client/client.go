@@ -10,6 +10,11 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/labstack/echo"
+	"ubox.golib/p2p/protocol"
+	"webRtc/proxy"
+	"encoding/base64"
 )
 
 type SdpReq struct {
@@ -32,6 +37,7 @@ var (
 	//ChStartGetBoxSdp  = make(chan string, 1)
 	ChStartRegAppSdp  = make(chan string, 1)
 	ChAnswerSdpReady = make(chan string, 1)
+	ChDcEnable = make(chan string, 1)
 	ChAllOk = make(chan int, 1)
 
 	dc *webrtc.DataChannel
@@ -57,7 +63,7 @@ func mainprocess() {
 	go func() {
 
 		for{
-			time.Sleep(time.Second*10)
+			time.Sleep(time.Second)
 			sdp := getRemoteServerSdp()
 			if sdp != "" {
 				resdp := handleRemoteBoxSdpUtilSuccess(sdp , pc)
@@ -71,46 +77,110 @@ func mainprocess() {
 	// Step 6. setAppLocalRemoteSdp
 	go func() {
 		app_sdp := <-ChStartRegAppSdp //wait
-		time.Sleep(time.Second*5)
+		//time.Sleep(time.Second*5)
 		setAppRemoteSdp(app_sdp)
+		<- ChDcEnable
+
 		ChAllOk<-1
 	}()
 
 	// Step 7. blocked & loop & print status info
-	var endchat bool = false
+	//var endchat bool = false
 	//dc = prepareDataChannel(pc, &endchat)
 	time.Sleep(5 * time.Second)
 	fmt.Printf("====Waiting all ok===\n", )
 	<-ChAllOk
-	for !endchat{
-		msg := "i am client 3\n"
+	//for !endchat{
+	//	msg := "i am client 1\n"
+	//
+	//	if dc != nil {
+	//		fmt.Printf("DataChannel state : %s\n", dc.ReadyState().String())
+	//		fmt.Printf("client send data : %s\n", msg)
+	//		dc.Send([]byte(msg))
+	//	}
+	//
+	//	time.Sleep(5 * time.Second)
+	//}
 
-		if dc != nil {
-			fmt.Printf("DataChannel state : %s\n", dc.ReadyState().String())
-			fmt.Printf("client send data : %s\n", msg)
-			dc.Send([]byte(msg))
-		}
-
-		time.Sleep(5 * time.Second)
-	}
 }
+
 func main(){
-	for{
-		fmt.Println("!!!Start a new session!!!!")
-		mainprocess()
-	}
+
+	fmt.Println("!!!Start a new session!!!!")
+	mainprocess()
+
+	e := echo.New()
+
+	e.POST("/ubeybox/*" , ProxyUbeyboxReq)
+
+	e.Start(":10086")
 }
+
+
+
+func ProxyUbeyboxReq(c echo.Context) error {
+
+	fmt.Printf("get req :%s\n",c.Request().RequestURI)
+
+	req := protocol.WebRtcReq{}
+	reqHeader := make(map[string][]string)
+
+
+	req.Url = c.Request().RequestURI
+	for k , v := range c.Request().Header {
+		reqHeader[k] = v
+	}
+
+	bHeader , _ := json.Marshal(reqHeader)
+	req.Header = string(bHeader)
+
+	req.Method = "POST"
+	bBody , _ := ioutil.ReadAll(c.Request().Body)
+	req.Body = string(bBody)
+
+
+	reqData , _ := json.Marshal(req)
+	dataStr := string(base64.StdEncoding.EncodeToString(reqData))
+	data := []byte(dataStr + "\n")
+	//data := protocol.GetProtManagerIns().PackData(req) + "\n"
+
+	l := len(data)
+	mid := l
+
+	dc.Send([]byte(data[:mid]))
+	fmt.Printf("client send data :%s\n",data[:mid])
+	//time.Sleep(time.Second * 2)
+	//dc.Send([]byte(data[mid:l]))
+	//fmt.Printf("client send data :%s\n",data[mid:l])
+	rsp := <- proxy.GetCliManager().ChRsp
+
+	c.Response().Status = rsp.Code
+
+	rspHeader := make(map[string][]string)
+	json.Unmarshal([]byte(rsp.Header) , &rspHeader)
+
+	for k , v := range rspHeader {
+		for _ , v2 := range v {
+			c.Response().Header().Add(k , v2)
+		}
+	}
+
+	c.Response().Write([]byte(rsp.Body))
+	fmt.Printf("get rsp :%+v\n",rsp)
+	return c.JSONPretty(200, "" , "")
+}
+
 
 func createpc() *webrtc.PeerConnection {
 	fmt.Println("Initbox...")
 	fmt.Println("Starting up PeerConnection config...")
 
 	urls := []string{"turn:iamtest.yqtc.co:3478?transport=udp"}
-	s := webrtc.IceServer{Urls: urls, Username: "1531277854:guest", Credential: "3dLgnggMLsyTCOb5CF+jcOznZ8A="} //Credential:"turn.yqtc.top"
+	s := webrtc.IceServer{Urls: urls, Username: "1531542280:guest", Credential: "xAhVJq3B18x2tdaFQUeYc3DcK9k="}  //Credential:"turn.yqtc.top"
 	webrtc.NewIceServer()
 	config := webrtc.NewConfiguration()
 	config.IceServers = append(config.IceServers, s)
-	config.IceTransportPolicy = webrtc.IceTransportPolicyRelay
+	//config.IceTransportPolicy = webrtc.IceTransportPolicyRelay
 
 	pc, err := webrtc.NewPeerConnection(config)
 	if nil != err {
@@ -164,7 +234,7 @@ func getRemoteServerSdp() string {
 	body.Box_id = BOXID
 	body.Action = 0
 
-	url := "http://iamtest.yqtc.co/ubbey/turn/app_connect"
+	url := "http://iamtest.yqtc.co/ubbey/sdp/app_get_box_sdp"
 
 	b , _ := json.Marshal(body)
 
@@ -195,7 +265,7 @@ func getRemoteServerSdp() string {
 func setAppRemoteSdp(msg string){
 	fmt.Println(" ---- register sdp to host ---- ")
 
-	url := "http://iamtest.yqtc.co/ubbey/turn/app_connect"
+	url := "http://iamtest.yqtc.co/ubbey/sdp/app_register_sdp"
 
 	body := SdpReq{}
 
@@ -294,32 +364,10 @@ func setAppLocalRemoteSdp(msg string, pc *webrtc.PeerConnection) {
 	}
 }
 
-func prepareDataChannel(pc *webrtc.PeerConnection, endchat *bool) (dc *webrtc.DataChannel) {
-	// Attempting to create the first datachannel triggers ICE.
-	fmt.Println("prepareDataChannel datachannel....")
-	dc, err := pc.CreateDataChannel("test")
-	if nil != err {
-		fmt.Println("Unexpected failure creating Channel.")
-		return
-	}
-
-	dc.OnOpen = func() {
-		fmt.Println("Data Channel Opened!")
-		//startChat()
-	}
-	dc.OnClose = func() {
-		fmt.Println("Data Channel closed.")
-		*endchat = true
-	}
-	dc.OnMessage = func(msg []byte) {
-		fmt.Printf("recv msg : %s\n", msg)
-	}
-	return dc
-}
-
 func datachannlePrepare(channl *webrtc.DataChannel) *webrtc.DataChannel {
 	channl.OnOpen = func() {
 		fmt.Println("Data Channel Opened!")
+		ChDcEnable <- "done"
 		//startChat()
 	}
 	channl.OnClose = func() {
@@ -327,6 +375,8 @@ func datachannlePrepare(channl *webrtc.DataChannel) *webrtc.DataChannel {
 	}
 	channl.OnMessage = func(msg []byte) {
 		fmt.Printf("recv msg : %s\n", msg)
+
+		proxy.GetCliManager().PutData(msg)
 	}
 	return channl
 }
